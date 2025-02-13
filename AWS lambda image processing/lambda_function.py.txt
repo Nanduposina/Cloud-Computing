@@ -1,0 +1,80 @@
+import json
+import boto3
+import io
+from PIL import Image
+import logging
+import urllib.parse
+
+logger = logging.getLogger()
+logger.setLevel(logging.INFO)
+
+def lambda_handler(event, context):
+    s3 = boto3.client('s3')
+    source_bucket = 'input-product-images'
+    destination_bucket = 'output-product-thumbnail'
+    
+    try:
+        # Log the event
+        logger.info(f"Received event: {json.dumps(event)}")
+        
+        # Get the file name and decode it properly
+        file_obj = event["Records"][0]
+        file_name = urllib.parse.unquote_plus(file_obj['s3']['object']['key'])
+        logger.info(f"Processing file: {file_name}")
+        
+        # List objects in source bucket to verify file exists
+        try:
+            list_response = s3.list_objects_v2(Bucket=source_bucket, Prefix=file_name)
+            logger.info(f"Files in bucket with prefix {file_name}: {list_response.get('Contents', [])}")
+        except Exception as e:
+            logger.error(f"Error listing objects: {str(e)}")
+            raise
+
+        # Get image from S3
+        try:
+            response = s3.get_object(Bucket=source_bucket, Key=file_name)
+            logger.info("Successfully retrieved image from source bucket")
+        except Exception as e:
+            logger.error(f"Error getting object from source bucket: {str(e)}")
+            raise
+        
+        image_content = response['Body'].read()
+        
+        # Process image
+        try:
+            with Image.open(io.BytesIO(image_content)) as img:
+                logger.info(f"Original image size: {img.size}")
+                img.thumbnail((256, 256))
+                logger.info(f"Thumbnail size: {img.size}")
+                buffer = io.BytesIO()
+                img.save(buffer, format=img.format)
+                resized_image = buffer.getvalue()
+        except Exception as e:
+            logger.error(f"Error processing image: {str(e)}")
+            raise
+        
+        # Upload thumbnail
+        try:
+            thumb_name = f"thumb_{file_name}"
+            s3.put_object(
+                Bucket=destination_bucket,
+                Key=thumb_name,
+                Body=resized_image,
+                ContentType=f'image/{img.format.lower()}'
+            )
+            logger.info(f"Successfully uploaded thumbnail: {thumb_name}")
+        except Exception as e:
+            logger.error(f"Error uploading thumbnail: {str(e)}")
+            raise
+        
+        return {
+            'statusCode': 200,
+            'body': json.dumps(f'Created thumbnail: {thumb_name}')
+        }
+        
+    except Exception as e:
+        logger.error(f"Error: {str(e)}")
+        return {
+            'statusCode': 500,
+            'body': json.dumps(str(e))
+        }
